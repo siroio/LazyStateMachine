@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "DebugAnlyzer": {
+      "commandName": "DebugRoslynComponent",
+      "targetProject": "..\\LazyStateMachineTester\\LazyStateMachineTester.csproj"
+    }
+  }
+}
