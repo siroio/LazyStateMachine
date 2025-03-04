@@ -1,23 +1,27 @@
-﻿using Microsoft.CodeAnalysis;
+﻿using System.Text;
+using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
-using System.Text;
 
 namespace LazyStateMachineGenerator
 {
     public class StateSyntaxReceiver : ISyntaxReceiver
     {
-        public List<ClassDeclarationSyntax> CandidateClasses { get; } = new();
+        public HashSet<ClassDeclarationSyntax> CandidateClasses { get; } = new();
 
         public void OnVisitSyntaxNode(SyntaxNode syntaxNode)
         {
-            // クラス宣言のみを対象とする
-            if (syntaxNode is ClassDeclarationSyntax classDecl)
+            if (syntaxNode is ClassDeclarationSyntax classDecl && classDecl.BaseList != null)
             {
-                // LazyStateBase を継承しているクラスを収集
-                if (classDecl.BaseList?.Types.Any(bt => bt.Type.ToString() == "LazyStateBase") == true)
+                foreach (var baseType in classDecl.BaseList.Types)
                 {
-                    CandidateClasses.Add(classDecl);
+                    if (baseType.Type is GenericNameSyntax genericName &&
+                        genericName.Identifier.Text == "LazyStateBase")
+                    {
+                        CandidateClasses.Add(classDecl);
+                        return; // 1つ見つかったら終了
+                    }
                 }
             }
         }
@@ -26,10 +30,17 @@ namespace LazyStateMachineGenerator
     [Generator]
     internal class LazyStateGenerator : ISourceGenerator
     {
-        public void Initialize(GeneratorInitializationContext context)
+        private static readonly (string MethodName, string InterfaceName)[] MethodMappings =
         {
+            ("OnEnter", "IOnEnter"),
+            ("OnUpdate", "IOnUpdate"),
+            ("OnFixedUpdate", "IOnFixedUpdate"),
+            ("OnLateUpdate", "IOnLateUpdate"),
+            ("OnExit", "IOnExit")
+        };
+
+        public void Initialize(GeneratorInitializationContext context) =>
             context.RegisterForSyntaxNotifications(() => new StateSyntaxReceiver());
-        }
 
         public void Execute(GeneratorExecutionContext context)
         {
@@ -41,35 +52,10 @@ namespace LazyStateMachineGenerator
             foreach (var stateClass in receiver.CandidateClasses)
             {
                 var model = compilation.GetSemanticModel(stateClass.SyntaxTree);
-                if (model.GetDeclaredSymbol(stateClass) is not INamedTypeSymbol symbol) continue;
+                if (model.GetDeclaredSymbol(stateClass) is not INamedTypeSymbol symbol)
+                    continue;
 
-                var interfaces = new List<string>();
-
-                if (symbol.GetMembers().OfType<IMethodSymbol>().Any(m => m.Name == "OnEnter"))
-                {
-                    interfaces.Add("IOnEnter");
-                }
-
-                if (symbol.GetMembers().OfType<IMethodSymbol>().Any(m => m.Name == "OnUpdate"))
-                {
-                    interfaces.Add("IOnUpdate");
-                }
-
-                if (symbol.GetMembers().OfType<IMethodSymbol>().Any(m => m.Name == "OnFixedUpdate"))
-                {
-                    interfaces.Add("IOnFixedUpdate");
-                }
-
-                if (symbol.GetMembers().OfType<IMethodSymbol>().Any(m => m.Name == "OnLateUpdate"))
-                {
-                    interfaces.Add("IOnLateUpdate");
-                }
-
-                if (symbol.GetMembers().OfType<IMethodSymbol>().Any(m => m.Name == "OnExit"))
-                {
-                    interfaces.Add("IOnExit");
-                }
-
+                var interfaces = DetectInterfaces(symbol);
                 if (interfaces.Count > 0)
                 {
                     var source = GeneratePartialClass(symbol, interfaces);
@@ -78,22 +64,49 @@ namespace LazyStateMachineGenerator
             }
         }
 
-        private string GeneratePartialClass(INamedTypeSymbol symbol, List<string> interfaces)
+        private HashSet<string> DetectInterfaces(INamedTypeSymbol symbol)
         {
-            var namespaceName = symbol.ContainingNamespace.ToString();
-            var className = symbol.Name;
-            var interfaceList = string.Join(", ", interfaces);
+            var interfaces = new HashSet<string>(StringComparer.Ordinal);
 
-            StringBuilder sb = new StringBuilder();
+            foreach (var (MethodName, InterfaceName) in MethodMappings)
+            {
+                foreach (var member in symbol.GetMembers())
+                {
+                    if (member is IMethodSymbol method &&
+                        method.MethodKind == MethodKind.Ordinary &&
+                        method.Name == MethodName)
+                    {
+                        interfaces.Add(InterfaceName);
+                        break; // 1つ見つかれば十分
+                    }
+                }
+            }
+
+            return interfaces;
+        }
+
+        private string GeneratePartialClass(INamedTypeSymbol symbol, HashSet<string> interfaces)
+        {
+            var namespaceName = symbol.ContainingNamespace.ToDisplayString();
+            var baseClass = symbol.BaseType?.ToDisplayString() ?? "LazyStateBase<T>";
+
+            var sb = new StringBuilder();
             sb.AppendLine("// Auto-Generated");
             sb.AppendLine("using LazyStateMachine;");
-            sb.AppendLine("");
-            sb.AppendLine($"namespace {namespaceName}");
+            sb.AppendLine();
+            sb.Append("namespace ").Append(namespaceName).AppendLine();
             sb.AppendLine("{");
-            sb.AppendLine($"    public partial class {className} : {interfaceList}");
-            sb.AppendLine("    {  }");
-            sb.AppendLine("}");
+            sb.Append("    public partial class ").Append(symbol.Name)
+              .Append(" : ").Append(baseClass);
 
+            if (interfaces.Count > 0)
+            {
+                sb.Append(", ").Append(string.Join(", ", interfaces));
+            }
+
+            sb.AppendLine();
+            sb.AppendLine("    { }");
+            sb.AppendLine("}");
             return sb.ToString();
         }
     }

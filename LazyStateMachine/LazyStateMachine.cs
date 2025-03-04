@@ -1,8 +1,15 @@
 ﻿using System;
 using System.Collections.Generic;
 
+#nullable enable
+
 namespace LazyStateMachine
 {
+    public interface IInitializeState
+    {
+        void InitializeState();
+    }
+
     public interface IOnEnter
     {
         void OnEnter();
@@ -28,124 +35,148 @@ namespace LazyStateMachine
         void OnExit();
     }
 
-    public class LazyStateBase
+    public abstract class LazyStateBase<T>
     {
-        public virtual void InitializeState()
-        { }
+        protected T Parent { get; }
+
+        public LazyStateBase(T parent)
+        {
+            Parent = parent;
+        }
     }
 
-    public sealed class LazyStateMachine<T, E> where E : Enum
+    public sealed class LazyStateMachine<T, E> where E : struct, Enum
     {
-        #region Property
-        public T Parent { get; private set; }
-        public E CurrentStateID { get; private set; }
-        #endregion
+        public E? CurrentStateID { get; private set; }
+        public E? PrevStateID { get; private set; }
 
         #region Members
-        private readonly Dictionary<E, LazyStateBase> stateInstances;
-        private readonly Dictionary<E, Action> enterFunctions;
-        private readonly Dictionary<E, Action> updateFunctions;
-        private readonly Dictionary<E, Action> fixedUpdateFunctions;
-        private readonly Dictionary<E, Action> lateUpdateFunctions;
-        private readonly Dictionary<E, Action> exitFunctions;
-        private E initialStateId = default;
+        private readonly Dictionary<E, LazyStateBase<T>> stateInstances = new();
+        private readonly Dictionary<E, IInitializeState> initializeFunctions = new();
+        private readonly Dictionary<E, IOnEnter> enterFunctions = new();
+        private readonly Dictionary<E, IOnUpdate> updateFunctions = new();
+        private readonly Dictionary<E, IOnFixedUpdate> fixedUpdateFunctions = new();
+        private readonly Dictionary<E, IOnLateUpdate> lateUpdateFunctions = new();
+        private readonly Dictionary<E, IOnExit> exitFunctions = new();
+        private E initialStateId;
         #endregion
 
-        public LazyStateMachine()
+        public event Action<E?, E>? OnStateChanged;
+
+        public void Initialize()
         {
-            stateInstances = new Dictionary<E, LazyStateBase>();
-            enterFunctions = new Dictionary<E, Action>();
-            updateFunctions = new Dictionary<E, Action>();
-            fixedUpdateFunctions = new Dictionary<E, Action>();
-            lateUpdateFunctions = new Dictionary<E, Action>();
-            exitFunctions = new Dictionary<E, Action>();
-        }
-
-        public bool Initialize(T parent)
-        {
-            if (parent == null)
+            foreach (var state in initializeFunctions.Values)
             {
-                return false;
+                state.InitializeState();
             }
-
-            Parent = parent;
-
-            foreach(var state in stateInstances)
-            {
-                state.Value.InitializeState();
-            }
+            initializeFunctions.Clear();
 
             ChangeState(initialStateId);
+        }
+
+        public void SetInitialState(E stateId) => initialStateId = stateId;
+
+        public bool RegisterState(E stateID, LazyStateBase<T> state)
+        {
+            if (stateInstances.ContainsKey(stateID)) return false;
+
+            stateInstances[stateID] = state;
+
+            if (state is IInitializeState initialize)
+            {
+                initializeFunctions[stateID] = initialize;
+            }
+            if (state is IOnEnter enter)
+            {
+                enterFunctions[stateID] = enter;
+            }
+            if (state is IOnUpdate update)
+            {
+                updateFunctions[stateID] = update;
+            }
+            if (state is IOnFixedUpdate fixedUpdate)
+            {
+                fixedUpdateFunctions[stateID] = fixedUpdate;
+            }
+            if (state is IOnLateUpdate lateUpdate)
+            {
+                lateUpdateFunctions[stateID] = lateUpdate;
+            }
+            if (state is IOnExit exit)
+            {
+                exitFunctions[stateID] = exit;
+            }
 
             return true;
         }
 
-        public void SetInitialState(E stateId)
+        public bool ChangeState(E eventId)
         {
-            initialStateId = stateId;
-        }
+            if (EqualsState(CurrentStateID, eventId)) return false;
+            if (!stateInstances.ContainsKey(eventId)) return false;
 
-        public void RegisterState(E stateID, LazyStateBase state)
-        {
-            stateInstances[stateID] = state;
-
-            if (state is IOnEnter enterState)
-                enterFunctions[stateID] = enterState.OnEnter;
-
-            if (state is IOnUpdate updateState)
-                updateFunctions[stateID] = updateState.OnUpdate;
-
-            if (state is IOnFixedUpdate fixedUpdateState)
-                fixedUpdateFunctions[stateID] = fixedUpdateState.OnFixedUpdate;
-
-            if (state is IOnLateUpdate lateUpdateState)
-                lateUpdateFunctions[stateID] = lateUpdateState.OnLateUpdate;
-
-            if (state is IOnExit exitState)
-                exitFunctions[stateID] = exitState.OnExit;
-        }
-
-        public void ChangeState(E eventId)
-        {
-            // 現在のステートと遷移先のステートが同じ場合は処理をスキップ
-            if (EqualsState(CurrentStateID, eventId))
+            if (CurrentStateID is not null && exitFunctions.TryGetValue(CurrentStateID.Value, out var exitState))
             {
-                return; // 同じステートに遷移しようとしているので何もしない
+                exitState?.OnExit();
             }
 
-            // 最初の状態遷移時には Exit を呼ばないようにする
-            if (EqualsState(CurrentStateID, default))
-            {
-                // 現在のステートの Exit を呼び出す
-                exitFunctions[CurrentStateID]?.Invoke();
-            }
-
-            // 現在のステートを更新
+            PrevStateID = CurrentStateID;
             CurrentStateID = eventId;
 
-            // 新しいステートの Enter を呼び出す
-            enterFunctions[eventId]?.Invoke();
-        }
+            if (enterFunctions.TryGetValue(eventId, out var enterState))
+            {
+                enterState?.OnEnter();
+            }
 
+            OnStateChanged?.Invoke(PrevStateID, eventId);
+
+            return true;
+        }
 
         public void Update()
         {
-            updateFunctions[CurrentStateID]?.Invoke();
+            if (CurrentStateID is not null && updateFunctions.TryGetValue(CurrentStateID.Value, out var state))
+            {
+                state?.OnUpdate();
+            }
         }
-
         public void FixedUpdate()
         {
-            fixedUpdateFunctions[CurrentStateID]?.Invoke();
+            if (CurrentStateID is not null && fixedUpdateFunctions.TryGetValue(CurrentStateID.Value, out var state))
+            {
+                state?.OnFixedUpdate();
+            }
         }
-
         public void LateUpdate()
         {
-            lateUpdateFunctions[CurrentStateID]?.Invoke();
+            if (CurrentStateID is not null && lateUpdateFunctions.TryGetValue(CurrentStateID.Value, out var state))
+            {
+                state?.OnLateUpdate();
+            }
         }
 
-        private bool EqualsState(E state1, E state2)
+        public bool ResetState(E stateId)
         {
-            return EqualityComparer<E>.Default.Equals(state1, state2);
+            if (!stateInstances.ContainsKey(stateId)) return false;
+
+            if (exitFunctions.TryGetValue(stateId, out var exitState))
+                exitState?.OnExit();
+            if (enterFunctions.TryGetValue(stateId, out var enterState))
+                enterState?.OnEnter();
+
+            return true;
         }
+
+        public void Dispose()
+        {
+            enterFunctions.Clear();
+            updateFunctions.Clear();
+            fixedUpdateFunctions.Clear();
+            lateUpdateFunctions.Clear();
+            exitFunctions.Clear();
+            stateInstances.Clear();
+        }
+
+        private bool EqualsState(E? state1, E state2) => state1.HasValue && EqualityComparer<E>.Default.Equals(state1.Value, state2);
     }
 }
