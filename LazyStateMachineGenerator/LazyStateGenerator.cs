@@ -1,34 +1,11 @@
-﻿using System.Text;
+﻿using System.Collections.Immutable;
 using Microsoft.CodeAnalysis;
-using Microsoft.CodeAnalysis.CSharp;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
-using Microsoft.CodeAnalysis.Text;
+using Microsoft.CodeAnalysis.DotnetRuntime.Extensions;
 
 namespace LazyStateMachineGenerator
 {
-    public class StateSyntaxReceiver : ISyntaxReceiver
-    {
-        public HashSet<ClassDeclarationSyntax> CandidateClasses { get; } = new();
-
-        public void OnVisitSyntaxNode(SyntaxNode syntaxNode)
-        {
-            if (syntaxNode is ClassDeclarationSyntax classDecl && classDecl.BaseList != null)
-            {
-                foreach (var baseType in classDecl.BaseList.Types)
-                {
-                    if (baseType.Type is GenericNameSyntax genericName &&
-                        genericName.Identifier.Text == "LazyStateBase")
-                    {
-                        CandidateClasses.Add(classDecl);
-                        return; // 1つ見つかったら終了
-                    }
-                }
-            }
-        }
-    }
-
     [Generator]
-    internal class LazyStateGenerator : ISourceGenerator
+    internal class LazyStateGenerator : IIncrementalGenerator
     {
         private static readonly (string MethodName, string InterfaceName)[] MethodMappings =
         {
@@ -39,75 +16,110 @@ namespace LazyStateMachineGenerator
             ("OnExit", "IOnExit")
         };
 
-        public void Initialize(GeneratorInitializationContext context) =>
-            context.RegisterForSyntaxNotifications(() => new StateSyntaxReceiver());
-
-        public void Execute(GeneratorExecutionContext context)
+        public void Initialize(IncrementalGeneratorInitializationContext context)
         {
-            if (context.SyntaxReceiver is not StateSyntaxReceiver receiver)
-                return;
-
-            var compilation = context.Compilation;
-
-            foreach (var stateClass in receiver.CandidateClasses)
+            context.RegisterPostInitializationOutput(static context =>
             {
-                var model = compilation.GetSemanticModel(stateClass.SyntaxTree);
-                if (model.GetDeclaredSymbol(stateClass) is not INamedTypeSymbol symbol)
+                context.AddSource("GenerateLazyStateAttribute.g.cs", """
+using System;
+
+namespace LazyStateMachine 
+{
+    [AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
+    internal sealed class GenerateLazyStateAttribute : Attribute
+    { }
+}
+""");
+            });
+
+            var source = context.SyntaxProvider.ForAttributeWithMetadataName(
+                context,
+                "LazyStateMachine.GenerateLazyStateAttribute",
+                static (node, token) => true,
+                static (context, token) => context)
+                .Collect();
+
+            context.RegisterSourceOutput(source, Emit);
+        }
+
+        private static void Emit(SourceProductionContext context, ImmutableArray<GeneratorAttributeSyntaxContext> array)
+        {
+            foreach (var item in array)
+            {
+                if (item.TargetSymbol is not INamedTypeSymbol classSymbol)
                     continue;
 
-                var interfaces = DetectInterfaces(symbol);
-                if (interfaces.Count > 0)
+                var className = classSymbol.Name;
+                var namespaceName = classSymbol.ContainingNamespace.ToDisplayString();
+                var baseClazzTypeParameter = new HashSet<string>();
+                var implementedInterfaces = new HashSet<string>();
+
+                if (classSymbol.BaseType == null || !classSymbol.BaseType.Name.StartsWith("LazyStateBase"))
                 {
-                    var source = GeneratePartialClass(symbol, interfaces);
-                    context.AddSource($"{symbol.Name}.g.cs", SourceText.From(source, Encoding.UTF8));
+                    context.ReportDiagnostic(Diagnostic.Create(
+                        new DiagnosticDescriptor(
+                            "LSS0001", // カスタムエラーコード
+                            "Invalid Base Class",
+                            $"{className} must inherit from LazyStateBase<T> to use the GenerateStateAttribute.",
+                            "Usage",
+                            DiagnosticSeverity.Error,
+                            true),
+                        item.Attributes[0]?.ApplicationSyntaxReference?.GetSyntax().GetLocation()));
+                    continue;
                 }
-            }
-        }
 
-        private HashSet<string> DetectInterfaces(INamedTypeSymbol symbol)
-        {
-            var interfaces = new HashSet<string>(StringComparer.Ordinal);
-
-            foreach (var (MethodName, InterfaceName) in MethodMappings)
-            {
-                foreach (var member in symbol.GetMembers())
+                for (int i = 0; i < classSymbol.BaseType?.TypeArguments.Length; i++)
                 {
-                    if (member is IMethodSymbol method &&
-                        method.MethodKind == MethodKind.Ordinary &&
-                        method.Name == MethodName)
+                    ITypeSymbol? param = classSymbol.BaseType?.TypeArguments[i];
+                    if (param == null) break;
+                    baseClazzTypeParameter.Add(param.ToDisplayString());
+                }
+
+                // クラス内のメソッドを取得し、対応するインターフェースを特定
+                foreach (var method in classSymbol.GetMembers().OfType<IMethodSymbol>())
+                {
+                    foreach (var (methodName, interfaceName) in MethodMappings)
                     {
-                        interfaces.Add(InterfaceName);
-                        break; // 1つ見つかれば十分
+                        if (method.Name == methodName)
+                        {
+                            implementedInterfaces.Add(interfaceName);
+                        }
                     }
                 }
-            }
 
-            return interfaces;
+                if (implementedInterfaces.Count == 0)
+                    continue;
+
+                var builder = new SourceBuilder();
+
+                if (classSymbol.BaseType?.ContainingNamespace != null)
+                {
+                    builder.UsingDirective(classSymbol.BaseType.ContainingNamespace.ToDisplayString());
+                    builder.InsertLine();
+                }
+
+                void CreateClassScope()
+                {
+                    using (builder.CreateClassScope($"{className} : LazyStateBase<{string.Join(", ", baseClazzTypeParameter)}>, {string.Join(", ", implementedInterfaces)}", "public partial"))
+                    { }
+                }
+
+                builder.InsertLine(@"//===== AUTO GENERATE CLASS ======");
+                if (!namespaceName.Contains("global namespace"))
+                {
+                    using (builder.CreateNamespaceScope(namespaceName))
+                    {
+                        CreateClassScope();
+                    }
+                }
+                else
+                {
+                    CreateClassScope();
+                }
+
+                context.AddSource($"{className}.g.cs", builder.ToString());
+            }
         }
 
-        private string GeneratePartialClass(INamedTypeSymbol symbol, HashSet<string> interfaces)
-        {
-            var namespaceName = symbol.ContainingNamespace.ToDisplayString();
-            var baseClass = symbol.BaseType?.ToDisplayString() ?? "LazyStateBase<T>";
-
-            var sb = new StringBuilder();
-            sb.AppendLine("// Auto-Generated");
-            sb.AppendLine("using LazyStateMachine;");
-            sb.AppendLine();
-            sb.Append("namespace ").Append(namespaceName).AppendLine();
-            sb.AppendLine("{");
-            sb.Append("    public partial class ").Append(symbol.Name)
-              .Append(" : ").Append(baseClass);
-
-            if (interfaces.Count > 0)
-            {
-                sb.Append(", ").Append(string.Join(", ", interfaces));
-            }
-
-            sb.AppendLine();
-            sb.AppendLine("    { }");
-            sb.AppendLine("}");
-            return sb.ToString();
-        }
     }
 }

@@ -1,16 +1,20 @@
 ﻿using System;
 using System.Diagnostics;
 using LazyStateMachine;
+using LazyStateMachineTester;
+
+[GenerateLazyState]
+public partial class IdleState(Player parent) : LazyStateBase<Player>(parent)
+{
+    public void OnEnter() => Console.WriteLine("[IdleState] Enter");
+    public void OnUpdate() => Console.WriteLine("[IdleState] Update");
+    public void OnExit() => Console.WriteLine("[IdleState] Exit");
+
+}
 
 namespace LazyStateMachineTester
 {
-    public partial class IdleState(Player parent) : LazyStateBase<Player>(parent)
-    {
-        public void OnEnter() => Console.WriteLine("[IdleState] Enter");
-        public void OnUpdate() => Console.WriteLine("[IdleState] Update");
-        public void OnExit() => Console.WriteLine("[IdleState] Exit");
-    }
-
+    [GenerateLazyState]
     public partial class WalkState(Player parent) : LazyStateBase<Player>(parent)
     {
         public void OnEnter() => Console.WriteLine("[WalkState] Enter");
@@ -18,6 +22,7 @@ namespace LazyStateMachineTester
         public void OnExit() => Console.WriteLine("[WalkState] Exit");
     }
 
+    [GenerateLazyState]
     public partial class RunState(Player parent) : LazyStateBase<Player>(parent)
     {
         public void OnEnter() => Console.WriteLine("[RunState] Enter");

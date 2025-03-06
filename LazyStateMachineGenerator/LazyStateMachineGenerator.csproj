@@ -12,9 +12,13 @@
 		<AnalyzerLanguage>cs</AnalyzerLanguage>
 		<EnforceExtendedAnalyzerRules>true</EnforceExtendedAnalyzerRules>
 	</PropertyGroup>
-	
+
 	<ItemGroup>
-		<PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.12.0" />
+		<PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.1.0" />
 	</ItemGroup>
-	
+
+	<ItemGroup>
+		<Folder Include="IncrementalSG\" />
+	</ItemGroup>
+
 </Project>
