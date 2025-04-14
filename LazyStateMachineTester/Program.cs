@@ -9,7 +9,6 @@ public partial class IdleState(Player parent) : LazyStateBase<Player>(parent)
     public void OnEnter() => Console.WriteLine("[IdleState] Enter");
     public void OnUpdate() => Console.WriteLine("[IdleState] Update");
     public void OnExit() => Console.WriteLine("[IdleState] Exit");
-
 }
 
 namespace LazyStateMachineTester
@@ -32,69 +31,37 @@ namespace LazyStateMachineTester
 
     public class Player
     {
-        public enum State
+        public enum State : byte
         {
             Idle,
             Walk,
             Run,
         }
 
-        private readonly LazyStateMachine<Player, State> sm = new();
-
-        private static void PrintMemoryUsage(string label)
-        {
-            long memoryBytes = GC.GetTotalMemory(true);
-            double memoryMB = memoryBytes / (1024.0 * 1024.0);
-            Console.WriteLine($"{label}: {memoryMB:F3} MB");
-        }
-
+        private readonly GCFreeStateMachine<Player, State> sm;
         public Player()
         {
-            Console.WriteLine("=== LazyStateMachine Tester ===");
+            sm = new(this);
+            sm.Register(State.Idle, new IdleState(this));
+            sm.Register(State.Walk, new WalkState(this));
+            sm.Register(State.Run, new RunState(this));
 
-            // メモリ使用量記録
-            PrintMemoryUsage("Before StateMachine creation");
-
-            // ステートマシンを作成
-            PrintMemoryUsage("After StateMachine creation");
-
-            // 状態を登録
-            sm.RegisterState(State.Idle, new IdleState(this));
-            sm.RegisterState(State.Walk, new WalkState(this));
-            sm.RegisterState(State.Run, new RunState(this));
-
-            PrintMemoryUsage("After state registration");
-
-            // 初期化
             sm.Initialize();
-            PrintMemoryUsage("After initialization");
-
-            // 更新テスト
-            sm.Update();
-            PrintMemoryUsage("After first update");
-
-            // 状態遷移テスト
-            ChangeState(State.Walk);
-            sm.Update();
-
-            ChangeState(State.Run);
-            sm.Update();
-
-            ChangeState(State.Idle);
-            sm.Update();
-
-            // 未登録の状態を試す（エラーハンドリング確認）
-            ChangeState((State)999);
-
-            // メモリ使用量の最終確認
-            PrintMemoryUsage("Final memory usage");
         }
 
-        private void ChangeState(State newState)
+        public void Bench()
         {
-            Console.WriteLine($"--- Changing State: {newState} ---");
-            sm.ChangeState(newState);
-            PrintMemoryUsage($"After changing to {newState}");
+
+
+            sm.Update();
+
+            // 状態遷移テスト
+            sm.ChangeState(State.Walk);
+            sm.ChangeState(State.Run);
+            sm.ChangeState(State.Idle);
+
+            // 未登録の状態を試す（エラーハンドリング確認）
+            sm.ChangeState((State)255);
         }
     }
 
@@ -102,11 +69,16 @@ namespace LazyStateMachineTester
     {
         public static void Main()
         {
-            _ = new Player();
+            var player = new Player();
+            Stopwatch stopwatch = new Stopwatch();
+            stopwatch.Start();
+            for (int i = 0; i < 1000; i++)
+            {
+                player.Bench();
+            }
+            stopwatch.Stop();
 
-            // プロセス全体のメモリ使用量を表示
-            double processMemoryMB = Process.GetCurrentProcess().WorkingSet64 / (1024.0 * 1024.0);
-            Console.WriteLine($"Total Process Memory Usage: {processMemoryMB:F3} MB");
+            Console.WriteLine($"Total Player initialization time: {stopwatch.ElapsedMilliseconds} ms");
         }
     }
 }
