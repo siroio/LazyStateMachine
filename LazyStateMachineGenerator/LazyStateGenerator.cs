@@ -25,6 +25,7 @@ using System;
 
 namespace LazyStateMachine 
 {
+    //===== AUTO GENERATE ATTRIBUTE ======
     [AttributeUsage(AttributeTargets.Class, AllowMultiple = false, Inherited = false)]
     internal sealed class GenerateLazyStateAttribute : Attribute
     { }
@@ -42,84 +43,82 @@ namespace LazyStateMachine
             context.RegisterSourceOutput(source, Emit);
         }
 
-        private static void Emit(SourceProductionContext context, ImmutableArray<GeneratorAttributeSyntaxContext> array)
+        private static void Emit(
+     SourceProductionContext context,
+     ImmutableArray<GeneratorAttributeSyntaxContext> contexts)
         {
-            foreach (var item in array)
+            foreach (var item in contexts)
             {
                 if (item.TargetSymbol is not INamedTypeSymbol classSymbol)
                     continue;
 
                 var className = classSymbol.Name;
                 var namespaceName = classSymbol.ContainingNamespace.ToDisplayString();
-                var baseClazzTypeParameter = new HashSet<string>();
-                var implementedInterfaces = new HashSet<string>();
 
-                if (classSymbol.BaseType == null || !classSymbol.BaseType.Name.StartsWith("LazyStateBase"))
+                var baseType = classSymbol.BaseType;
+                if (baseType == null
+                    || baseType.Name != "State"
+                    || baseType.ContainingType?.Name != "LazyStateMachine"
+                    || baseType.ContainingType.TypeArguments.Length != 2)
                 {
-                    context.ReportDiagnostic(Diagnostic.Create(
-                        new DiagnosticDescriptor(
-                            "LSS0001", // カスタムエラーコード
-                            "Invalid Base Class",
-                            $"{className} must inherit from LazyStateBase<T> to use the GenerateStateAttribute.",
-                            "Usage",
-                            DiagnosticSeverity.Error,
-                            true),
-                        item.Attributes[0]?.ApplicationSyntaxReference?.GetSyntax().GetLocation()));
+                    var descriptor = new DiagnosticDescriptor(
+                        "LSS0001",
+                        "Invalid Base Class",
+                        $"{className} must inherit from LazyStateMachine<TContext,TEnum>.State",
+                        "Usage",
+                        DiagnosticSeverity.Error,
+                        isEnabledByDefault: true);
+                    context.ReportDiagnostic(
+                        Diagnostic.Create(descriptor, classSymbol.Locations.First()));
                     continue;
                 }
 
-                for (int i = 0; i < classSymbol.BaseType?.TypeArguments.Length; i++)
-                {
-                    ITypeSymbol? param = classSymbol.BaseType?.TypeArguments[i];
-                    if (param == null) break;
-                    baseClazzTypeParameter.Add(param.ToDisplayString());
-                }
+                var parentMachine = baseType.ContainingType;
+                var ctxType = parentMachine.TypeArguments[0].ToDisplayString();
+                var enumType = parentMachine.TypeArguments[1].ToDisplayString();
 
-                // クラス内のメソッドを取得し、対応するインターフェースを特定
+                var implementedIFaces = new HashSet<string>();
                 foreach (var method in classSymbol.GetMembers().OfType<IMethodSymbol>())
                 {
-                    foreach (var (methodName, interfaceName) in MethodMappings)
+                    foreach (var (methodName, ifaceName) in MethodMappings)
                     {
                         if (method.Name == methodName)
-                        {
-                            implementedInterfaces.Add(interfaceName);
-                        }
+                            implementedIFaces.Add(ifaceName);
                     }
                 }
 
-                if (implementedInterfaces.Count == 0)
+                if (implementedIFaces.Count == 0)
                     continue;
 
-                var builder = new SourceBuilder();
+                var sb = new SourceBuilder();
+                sb.UsingDirective("LazyStateMachine");
+                sb.InsertLine();
 
-                if (classSymbol.BaseType?.ContainingNamespace != null)
+                if (!classSymbol.ContainingNamespace.IsGlobalNamespace)
                 {
-                    builder.UsingDirective(classSymbol.BaseType.ContainingNamespace.ToDisplayString());
-                    builder.InsertLine();
-                }
-
-                void CreateClassScope()
-                {
-                    using (builder.CreateClassScope($"{className} : LazyStateBase<{string.Join(", ", baseClazzTypeParameter)}>, {string.Join(", ", implementedInterfaces)}", "public partial"))
-                    { }
-                }
-
-                builder.InsertLine(@"//===== AUTO GENERATE CLASS ======");
-                if (!namespaceName.Contains("global namespace"))
-                {
-                    using (builder.CreateNamespaceScope(namespaceName))
-                    {
-                        CreateClassScope();
-                    }
+                    using (sb.CreateNamespaceScope(namespaceName))
+                        WritePartial();
                 }
                 else
                 {
-                    CreateClassScope();
+                    WritePartial();
                 }
 
-                context.AddSource($"{className}.g.cs", builder.ToString());
+                context.AddSource($"{className}.LazyState.g.cs", sb.ToString());
+                continue;
+
+                void WritePartial()
+                {
+                    sb.InsertLine("// ===== AUTO-GENERATED by LazyStateGenerator =====");
+                    
+                    using (sb.CreateClassScope(
+                               $"{className} : {string.Join(", ", implementedIFaces)}",
+                               "public partial"))
+                    {
+                        // empty
+                    }
+                }
             }
         }
-
     }
 }

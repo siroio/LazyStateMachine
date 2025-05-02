@@ -4,7 +4,7 @@ using LazyStateMachine;
 using LazyStateMachineTester;
 
 [GenerateLazyState]
-public partial class IdleState(Player parent) : LazyStateBase<Player>(parent)
+public partial class IdleState : LazyStateMachine<Player, Player.State>.State
 {
     public void OnEnter() => Console.WriteLine("[IdleState] Enter");
     public void OnUpdate() => Console.WriteLine("[IdleState] Update");
@@ -14,15 +14,16 @@ public partial class IdleState(Player parent) : LazyStateBase<Player>(parent)
 namespace LazyStateMachineTester
 {
     [GenerateLazyState]
-    public partial class WalkState(Player parent) : LazyStateBase<Player>(parent)
+    public partial class WalkState : LazyStateMachine<Player, Player.State>.State
     {
         public void OnEnter() => Console.WriteLine("[WalkState] Enter");
         public void OnUpdate() => Console.WriteLine("[WalkState] Update");
         public void OnExit() => Console.WriteLine("[WalkState] Exit");
+
     }
 
     [GenerateLazyState]
-    public partial class RunState(Player parent) : LazyStateBase<Player>(parent)
+    public partial class RunState : LazyStateMachine<Player, Player.State>.State
     {
         public void OnEnter() => Console.WriteLine("[RunState] Enter");
         public void OnUpdate() => Console.WriteLine("[RunState] Update");
@@ -38,13 +39,13 @@ namespace LazyStateMachineTester
             Run,
         }
 
-        private readonly GCFreeStateMachine<Player, State> sm;
+        private readonly LazyStateMachine<Player, State> sm;
         public Player()
         {
-            sm = new(this);
-            sm.Register(State.Idle, new IdleState(this));
-            sm.Register(State.Walk, new WalkState(this));
-            sm.Register(State.Run, new RunState(this));
+            sm = new();
+            sm.RegisterState<IdleState>(State.Idle, this);
+            sm.RegisterState<WalkState>(State.Walk, this);
+            sm.RegisterState<RunState>(State.Run, this);
 
             sm.Initialize();
         }

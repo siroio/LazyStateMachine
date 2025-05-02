@@ -1,5 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 
 #nullable enable
@@ -36,167 +35,6 @@ namespace LazyStateMachine
         void OnExit();
     }
 
-    public abstract class LazyStateBase<T>
-    {
-        protected T Parent { get; }
-
-        public LazyStateBase(T parent)
-        {
-            Parent = parent;
-        }
-    }
-
-    public sealed class LazyStateMachine<T>
-    {
-        public int? CurrentStateID { get; private set; }
-        public int? PrevStateID { get; private set; }
-
-        #region Members
-        private readonly Dictionary<int, LazyStateBase<T>> stateInstances = new();
-        private readonly Dictionary<int, IInitializeState> initializeFunctions = new();
-        private readonly Dictionary<int, IOnEnter> enterFunctions = new();
-        private readonly Dictionary<int, IOnUpdate> updateFunctions = new();
-        private readonly Dictionary<int, IOnFixedUpdate> fixedUpdateFunctions = new();
-        private readonly Dictionary<int, IOnLateUpdate> lateUpdateFunctions = new();
-        private readonly Dictionary<int, IOnExit> exitFunctions = new();
-        private int initialStateId;
-        #endregion
-
-        public event Action<int?, int>? OnStateChanged;
-
-        public void Initialize()
-        {
-            foreach (var state in initializeFunctions.Values)
-            {
-                state.InitializeState();
-            }
-            initializeFunctions.Clear();
-
-            ChangeState(initialStateId);
-        }
-
-        public void SetInitialState(int stateID) => initialStateId = stateID;
-
-        public bool RegisterState<E>(E stateID, LazyStateBase<T> state) where E : Enum
-        {
-            return RegisterState(ToInt(stateID), state);
-        }
-
-        public bool RegisterState(int stateID, LazyStateBase<T> state)
-        {
-            if (stateInstances.ContainsKey(stateID)) return false;
-
-            stateInstances[stateID] = state;
-
-            if (state is IInitializeState initialize)
-            {
-                initializeFunctions[stateID] = initialize;
-            }
-            if (state is IOnEnter enter)
-            {
-                enterFunctions[stateID] = enter;
-            }
-            if (state is IOnUpdate update)
-            {
-                updateFunctions[stateID] = update;
-            }
-            if (state is IOnFixedUpdate fixedUpdate)
-            {
-                fixedUpdateFunctions[stateID] = fixedUpdate;
-            }
-            if (state is IOnLateUpdate lateUpdate)
-            {
-                lateUpdateFunctions[stateID] = lateUpdate;
-            }
-            if (state is IOnExit exit)
-            {
-                exitFunctions[stateID] = exit;
-            }
-
-            return true;
-        }
-
-        public bool ChangeState<E>(E stateID) where E : Enum
-        {
-            return ChangeState(ToInt(stateID));
-        }
-
-        public bool ChangeState(int stateID)
-        {
-            if (CurrentStateID == stateID) return false;
-            if (!stateInstances.ContainsKey(stateID)) return false;
-
-            if (CurrentStateID is not null && exitFunctions.TryGetValue(CurrentStateID.Value, out var exitState))
-            {
-                exitState?.OnExit();
-            }
-
-            PrevStateID = CurrentStateID;
-            CurrentStateID = stateID;
-
-            if (enterFunctions.TryGetValue(stateID, out var enterState))
-            {
-                enterState?.OnEnter();
-            }
-
-            OnStateChanged?.Invoke(PrevStateID, stateID);
-
-            return true;
-        }
-
-        public void Update()
-        {
-            if (CurrentStateID is not null && updateFunctions.TryGetValue(CurrentStateID.Value, out var state))
-            {
-                state?.OnUpdate();
-            }
-        }
-        public void FixedUpdate()
-        {
-            if (CurrentStateID is not null && fixedUpdateFunctions.TryGetValue(CurrentStateID.Value, out var state))
-            {
-                state?.OnFixedUpdate();
-            }
-        }
-        public void LateUpdate()
-        {
-            if (CurrentStateID is not null && lateUpdateFunctions.TryGetValue(CurrentStateID.Value, out var state))
-            {
-                state?.OnLateUpdate();
-            }
-        }
-
-        public bool ResetState(int stateID)
-        {
-            if (!stateInstances.ContainsKey(stateID)) return false;
-
-            if (exitFunctions.TryGetValue(stateID, out var exitState))
-                exitState?.OnExit();
-            if (enterFunctions.TryGetValue(stateID, out var enterState))
-                enterState?.OnEnter();
-
-            return true;
-        }
-
-        public void Dispose()
-        {
-            enterFunctions.Clear();
-            updateFunctions.Clear();
-            fixedUpdateFunctions.Clear();
-            lateUpdateFunctions.Clear();
-            exitFunctions.Clear();
-            stateInstances.Clear();
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static int ToInt<E>(E value) where E : Enum
-        {
-            if (Enum.GetUnderlyingType(typeof(E)) != typeof(int))
-                throw new InvalidOperationException();
-            return Unsafe.As<E, int>(ref value);
-        }
-    }
-
     [Flags]
     public enum StateInterfaceMask : byte
     {
@@ -209,55 +47,59 @@ namespace LazyStateMachine
         OnExit = 1 << 5,
     }
 
-    internal readonly struct StateRecord<TContext>
-    {
-        public readonly LazyStateBase<TContext> State;
-        public readonly StateInterfaceMask Mask;
-
-        public StateRecord(LazyStateBase<TContext> state, StateInterfaceMask mask)
-        {
-            State = state;
-            Mask = mask;
-        }
-    }
-
-    public sealed class GCFreeStateMachine<TContext, TEnum>
+    public sealed class LazyStateMachine<TContext, TEnum>
         where TEnum : unmanaged, Enum
     {
-        private readonly Memory<StateRecord<TContext>> stateRecords;
+        public abstract class State
+        {
+            protected TContext? Parent { get; private set; }
+
+            internal void SetParent(TContext parent) => Parent = parent;
+        }
+
+        private readonly struct StateRecord
+        {
+            public readonly State State;
+            public readonly StateInterfaceMask Mask;
+
+            public StateRecord(State state, StateInterfaceMask mask)
+            {
+                State = state;
+                Mask = mask;
+            }
+        }
+
+
+        private readonly Memory<StateRecord> stateRecords;
         private int currentStateID = -1;
         private int prevStateID = -1;
-        private readonly TContext context;
 
         public int CurrentStateID => currentStateID;
         public int PrevStateID => prevStateID;
 
         public event Action<int, int>? OnStateChanged;
 
-        public GCFreeStateMachine(TContext ctx)
+        public LazyStateMachine()
         {
-            context = ctx;
             var count = Enum.GetValues(typeof(TEnum)).Length;
-            stateRecords = new Memory<StateRecord<TContext>>(new StateRecord<TContext>[count]);
+            stateRecords = new Memory<StateRecord>(new StateRecord[count]);
         }
 
-        public void Register<TState>(TEnum id, TState state) where TState : LazyStateBase<TContext>
+        public void RegisterState<TState>(TEnum id, TContext context)
+            where TState : State, new()
         {
-            int i = ToInt(id);
-            if (stateRecords.Span[i].State != null)
-            {
-                return;
-            }
+            var i = ToInt(id);
 
-            // 状態とインターフェースのマスクをメモリに保存
+            var state = new TState();
+            state.SetParent(context);
+
             var mask = GetStateMask(state);
-            stateRecords.Span[i] = new StateRecord<TContext>(state, mask);
+            stateRecords.Span[i] = new StateRecord(state, mask);
         }
 
         public void Initialize()
         {
-            // `Memory<T>` の `Span` を使用して効率的にアクセス
-            for (int i = 0; i < stateRecords.Length; i++)
+            for (var i = 0; i < stateRecords.Length; i++)
             {
                 var record = stateRecords.Span[i];
                 if ((record.Mask & StateInterfaceMask.Initialize) != 0)
@@ -268,14 +110,12 @@ namespace LazyStateMachine
         public bool ChangeState(TEnum newState)
         {
             int i = ToInt(newState);
-            if (i >= stateRecords.Length || stateRecords.Span[i].State == null || i == currentStateID)
+            if (i >= stateRecords.Length || i == currentStateID)
                 return false;
 
-            // 既存の状態のExit処理
             if (currentStateID >= 0 && (stateRecords.Span[currentStateID].Mask & StateInterfaceMask.OnExit) != 0)
                 ((IOnExit)stateRecords.Span[currentStateID].State).OnExit();
 
-            // 新しい状態のEnter処理
             prevStateID = currentStateID;
             currentStateID = i;
 
@@ -310,11 +150,10 @@ namespace LazyStateMachine
             return *(int*)&value;
         }
 
-        private static StateInterfaceMask GetStateMask<TState>(TState state) where TState : LazyStateBase<TContext>
+        private static StateInterfaceMask GetStateMask<TState>(TState state) where TState : State
         {
-            StateInterfaceMask mask = StateInterfaceMask.None;
+            var mask = StateInterfaceMask.None;
 
-            // インターフェースが実装されているかどうかをチェックする部分
             if (state is IInitializeState) mask |= StateInterfaceMask.Initialize;
             if (state is IOnEnter) mask |= StateInterfaceMask.OnEnter;
             if (state is IOnUpdate) mask |= StateInterfaceMask.OnUpdate;
