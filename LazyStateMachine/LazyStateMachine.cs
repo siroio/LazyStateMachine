@@ -1,5 +1,5 @@
 ﻿#define USE_FUNCTION_POINTER
-#undef USE_FUNCTION_POINTER
+
 using System;
 using System.Runtime.CompilerServices;
 
@@ -7,24 +7,34 @@ using System.Runtime.CompilerServices;
 
 namespace LazyStateMachine
 {
-    public interface IInitializeState { void InitializeState(); }
-    public interface IOnEnter { void OnEnter(); }
-    public interface IOnFixedUpdate { void OnFixedUpdate(); }
-    public interface IOnUpdate { void OnUpdate(); }
-    public interface IOnLateUpdate { void OnLateUpdate(); }
-    public interface IOnExit { void OnExit(); }
-
-
-    [Flags]
-    public enum StateInterfaceMask
+    public interface IInitializeState
     {
-        None = 0,
-        Initialize = 1 << 0,
-        OnEnter = 1 << 1,
-        OnUpdate = 1 << 2,
-        OnFixedUpdate = 1 << 3,
-        OnLateUpdate = 1 << 4,
-        OnExit = 1 << 5,
+        void InitializeState();
+    }
+
+    public interface IOnEnter
+    {
+        void OnEnter();
+    }
+
+    public interface IOnFixedUpdate
+    {
+        void OnFixedUpdate();
+    }
+
+    public interface IOnUpdate
+    {
+        void OnUpdate();
+    }
+
+    public interface IOnLateUpdate
+    {
+        void OnLateUpdate();
+    }
+
+    public interface IOnExit
+    {
+        void OnExit();
     }
 
     public sealed class LazyStateMachine<TParent, TEnum>
@@ -32,7 +42,7 @@ namespace LazyStateMachine
     {
         public abstract class State
         {
-            protected TParent? Parent { get; private set; }
+            protected TParent Parent { get; private set; } = default!;
 
             internal void SetParent(TParent parent) => Parent = parent;
         }
@@ -56,6 +66,7 @@ namespace LazyStateMachine
 #endif
         {
             public readonly State Instance;
+
 #if USE_FUNCTION_POINTER
             public readonly delegate*<State, void> Initialize;
             public readonly delegate*<State, void> Enter;
@@ -63,39 +74,38 @@ namespace LazyStateMachine
             public readonly delegate*<State, void> Fixed;
             public readonly delegate*<State, void> Late;
             public readonly delegate*<State, void> Exit;
-#else
-            public readonly CallTable Table;
-#endif
 
-#if USE_FUNCTION_POINTER
-            public StateRecord(State inst
+            public StateRecord(State inst,
                 delegate*<State, void> init,
                 delegate*<State, void> enter,
                 delegate*<State, void> update,
                 delegate*<State, void> fixedUpd,
                 delegate*<State, void> late,
                 delegate*<State, void> exit)
-#else
-            public StateRecord(State inst, CallTable table)
-#endif
             {
                 Instance = inst;
-#if USE_FUNCTION_POINTER
                 Initialize = init;
                 Enter = enter;
                 Update = update;
                 Fixed = fixedUpd;
                 Late = late;
                 Exit = exit;
-#else
-                Table = table;
-#endif
             }
+#else
+            public readonly CallTable Table;
+
+            public StateRecord(State inst, CallTable table)
+            {
+                Instance = inst;
+                Table = table;
+            }
+#endif
         }
 
 
-        private readonly StateRecord[] records = new StateRecord[Enum.GetValues(typeof(TEnum)).Length];
-        private int cur = -1, prev = -1;
+        private readonly StateRecord?[] records = new StateRecord[Enum.GetValues(typeof(TEnum)).Length];
+        private int cur = -1;
+        private int prev = -1;
 
         public int CurrentStateID => cur;
         public int PrevStateID => prev;
@@ -138,17 +148,15 @@ namespace LazyStateMachine
 #if USE_FUNCTION_POINTER
             unsafe
             {
-                foreach (var t in records.AsSpan())
+                foreach (var rec in records)
                 {
-                    var p = t.Initialize;
-                    if (p != null) p(t.Instance);
+                    if (rec == null) continue;
+                    InvokePtr(rec.Initialize, rec?.Instance);
                 }
             }
 #else
-            for (int i = 0; i < records.Length; ++i)
-            {
-                records[i].Table.Initialize?.Invoke(records[i].Instance);
-            }
+            foreach (var rec in records)
+                rec?.Table.Initialize?.Invoke(rec.Instance);
 #endif
         }
 
@@ -157,26 +165,33 @@ namespace LazyStateMachine
             int i = ToInt(next);
             if (i >= records.Length || i == cur) return false;
 
-#if USE_FUNCTION_POINTER
-            unsafe
+            if (cur >= 0)
             {
-                if (cur >= 0)
+#if USE_FUNCTION_POINTER
+                unsafe
                 {
-                    var pExit = records[cur].Exit;
-                    if (pExit != null) pExit(records[cur].Instance);
+                    var rec = records[cur];
+                    if (rec != null)
+                    {
+                        InvokePtr(rec.Exit, rec.Instance);
+                    }
                 }
-            }
 #else
-            if (cur >= 0) records[cur].Table.Exit?.Invoke(records[cur].Instance);
+                records[cur].Table.Exit?.Invoke(records[cur].Instance);
 #endif
+            }
+
             prev = cur;
             cur = i;
 
 #if USE_FUNCTION_POINTER
             unsafe
             {
-                var pEnter = records[cur].Enter;
-                if (pEnter != null) pEnter(records[cur].Instance);
+                var rec = records[cur];
+                if (rec != null)
+                {
+                    InvokePtr(rec.Enter, rec.Instance);
+                }
             }
 #else
             records[cur].Table.Enter?.Invoke(records[cur].Instance);
@@ -184,57 +199,47 @@ namespace LazyStateMachine
             OnStateChanged?.Invoke(prev, cur);
             return true;
         }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void Update()
-        {
 #if USE_FUNCTION_POINTER
+        public unsafe void Update() => InvokeCurrentUnsafe(rec => (IntPtr)rec.Update);
+        public unsafe void FixedUpdate() => InvokeCurrentUnsafe(rec => (IntPtr)rec.Fixed);
+        public unsafe void LateUpdate() => InvokeCurrentUnsafe(rec => (IntPtr)rec.Late);
+
+        private void InvokeCurrentUnsafe(Func<StateRecord, IntPtr> selector)
+        {
+            if (!TryGetRecord(cur, out var rec)) return;
+
             unsafe
             {
-                if (cur < 0) return;
-                var p = records[cur].Update;
-
-                if (p == null) return;
-                p(records[cur].Instance);
+                var ptr = (delegate*<State, void>)selector(rec);
+                InvokePtr(ptr, rec.Instance);
             }
-#else
-            if (cur >= 0) records[cur].Table.Update?.Invoke(records[cur].Instance);
-#endif
         }
 
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void FixedUpdate()
+        private bool TryGetRecord(int index, out StateRecord rec)
         {
-#if USE_FUNCTION_POINTER
-            unsafe
+            if (index >= 0 && index < records.Length && records[index] != null)
             {
-                if (cur < 0) return;
-                var p = records[cur].Fixed;
-                if (p == null) return;
-                p(records[cur].Instance);
+                rec = records[index]!;
+                return true;
             }
-#else
-            if (cur >= 0) records[cur].Table.Fixed?.Invoke(records[cur].Instance);
-#endif
-        }
 
+            rec = null!;
+            return false;
+        }
+#else
+        public void Update() => records[cur]?.Table.Update?.Invoke(records[cur].Instance);
+        public void FixedUpdate() => records[cur]?.Table.Fixed?.Invoke(records[cur].Instance);
+        public void LateUpdate() => records[cur]?.Table.Late?.Invoke(records[cur].Instance);
+#endif
+
+
+#if USE_FUNCTION_POINTER
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public void LateUpdate()
+        private static unsafe void InvokePtr(delegate*<State, void> ptr, State? inst)
         {
-#if USE_FUNCTION_POINTER
-            unsafe
-            {
-                if (cur < 0) return;
-                var p = records[cur].Late;
-                if (p == null) return;
-                p(records[cur].Instance);
-            }
-#else
-            if (cur >= 0) records[cur].Table.Late?.Invoke(records[cur].Instance);
-#endif
+            if ((nint)ptr != 0 && inst != null) ptr(inst);
         }
-
-
+#endif
         private static void InvokeInitialize(State s) => ((IInitializeState)s).InitializeState();
         private static void InvokeEnter(State s) => ((IOnEnter)s).OnEnter();
         private static void InvokeUpdate(State s) => ((IOnUpdate)s).OnUpdate();
