@@ -1,16 +1,19 @@
-﻿using System.Text;
+﻿using System.Runtime.CompilerServices;
+using System.Text;
 
 namespace LazyStateMachineGenerator
 {
     internal class SourceBuilder
     {
         private readonly StringBuilder sb = new();
-        private int indent = 0;
+        private int indent;
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private void AppendIndent() => sb.Append(' ', indent * 4);
 
         public void RemoveLast()
         {
-            if (sb.Length > 0)
-                sb.Remove(sb.Length - 1, 1);
+            if (sb.Length > 0) sb.Remove(sb.Length - 1, 1);
         }
 
         public void AddIndent(int indentLevel = 1)
@@ -28,15 +31,11 @@ namespace LazyStateMachineGenerator
             sb.AppendFormat(format, args);
         }
 
-        public void InsertLine()
+        public void InsertLine(string? code = null)
         {
-            sb.Append('\n').Append(GetIndentString());
-        }
-
-        public void InsertLine(string code)
-        {
-            InsertLine();
-            sb.Append(code);
+            sb.Append('\n');
+            AppendIndent();
+            if (!string.IsNullOrEmpty(code)) sb.Append(code);
         }
 
         public void InsertLines(IEnumerable<string> lines)
@@ -92,65 +91,56 @@ namespace LazyStateMachineGenerator
         public MethodScope CreateMethodScope(string name, string returnType = "void", string modifiers = "public") => new(this, name, returnType, modifiers);
     }
 
-    internal class BlockScope : IDisposable
+    internal readonly ref struct ScopeBase
     {
         private readonly SourceBuilder cb;
 
-        public BlockScope(SourceBuilder codeBuilder, string code)
+        public ScopeBase(SourceBuilder cb, string? line)
         {
-            cb = codeBuilder;
-            cb.InsertLine(code);
-            cb.BeginBlock();
-        }
-
-        public BlockScope(SourceBuilder codeBuilder)
-        {
-            cb = codeBuilder;
+            this.cb = cb;
+            if (!string.IsNullOrEmpty(line)) cb.InsertLine(line);
             cb.BeginBlock();
         }
 
         public void Dispose() => cb.EndBlock();
     }
 
-    internal class NamespaceScope : IDisposable
+    internal readonly ref struct BlockScope
     {
-        private readonly SourceBuilder cb;
-
-        public NamespaceScope(SourceBuilder codeBuilder, string name)
-        {
-            cb = codeBuilder;
-            cb.InsertLine($"namespace {name}");
-            cb.BeginBlock();
-        }
-
-        public void Dispose() => cb.EndBlock();
+        private readonly ScopeBase scope;
+        public BlockScope(SourceBuilder cb) => scope = new ScopeBase(cb, null);
+        public BlockScope(SourceBuilder cb, string code) => scope = new ScopeBase(cb, code);
+        public void Dispose() => scope.Dispose();
     }
 
-    internal class ClassScope : IDisposable
+    internal readonly ref struct NamespaceScope
     {
-        private readonly SourceBuilder cb;
+        private readonly ScopeBase scope;
 
-        public ClassScope(SourceBuilder codeBuilder, string name, string modifiers = "public")
-        {
-            cb = codeBuilder;
-            cb.InsertLine($"{modifiers} class {name}");
-            cb.BeginBlock();
-        }
+        public NamespaceScope(SourceBuilder cb, string ns) => scope = new ScopeBase(cb, $"namespace {ns}");
 
-        public void Dispose() => cb.EndBlock();
+        public void Dispose() => scope.Dispose();
     }
 
-    internal class MethodScope : IDisposable
+
+    internal readonly ref struct ClassScope
     {
-        private readonly SourceBuilder cb;
+        private readonly ScopeBase scope;
 
-        public MethodScope(SourceBuilder codeBuilder, string name, string returnType = "void", string modifiers = "public")
-        {
-            cb = codeBuilder;
-            cb.InsertLine($"{modifiers} {returnType} {name}()");
-            cb.BeginBlock();
-        }
+        public ClassScope(SourceBuilder cb, string name, string modifiers = "public")
+            => scope = new ScopeBase(cb, $"{modifiers} class {name}");
 
-        public void Dispose() => cb.EndBlock();
+        public void Dispose() => scope.Dispose();
+    }
+
+
+    internal readonly ref struct MethodScope
+    {
+        private readonly ScopeBase scope;
+
+        public MethodScope(SourceBuilder cb, string name, string returnType = "void", string modifiers = "public")
+            => scope = new ScopeBase(cb, $"{modifiers} {returnType} {name}()");
+
+        public void Dispose() => scope.Dispose();
     }
 }

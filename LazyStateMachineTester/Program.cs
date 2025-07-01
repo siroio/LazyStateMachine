@@ -71,7 +71,7 @@ namespace LazyStateMachineTester
         public static void Main()
         {
             var player = new Player();
-            Stopwatch stopwatch = new Stopwatch();
+            var stopwatch = new Stopwatch();
             stopwatch.Start();
             for (int i = 0; i < 1000; i++)
             {
